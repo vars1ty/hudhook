@@ -7,7 +7,7 @@ use parking_lot::Mutex;
 use tracing::{debug, trace};
 use windows::core::PCSTR;
 use windows::Win32::Foundation::{
-    GetLastError, BOOL, HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
+    GetLastError, HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
 };
 use windows::Win32::Graphics::Gdi::{ScreenToClient, WindowFromDC, HDC};
 use windows::Win32::Graphics::OpenGL::{glClearColor, glGetIntegerv, GL_VIEWPORT};
@@ -21,8 +21,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::hooks::common::{imgui_wnd_proc_impl, ImguiWindowsEventHandler, WndProcType};
-use crate::hooks::{Hooks, ImguiRenderLoop, ImguiRenderLoopFlags};
-use crate::mh::{MhHook, MhHooks};
+use crate::hooks::{Hooks, ImguiRenderLoop};
+use crate::mh::MhHook;
 use crate::renderers::imgui_opengl3::get_proc_address;
 
 type OpenGl32wglSwapBuffers = unsafe extern "system" fn(HDC) -> ();
@@ -65,7 +65,6 @@ unsafe fn draw(dc: HDC) {
                 ctx: context,
                 renderer,
                 wnd_proc,
-                flags: ImguiRenderLoopFlags { focused: false },
                 game_hwnd: hwnd,
                 resolution_and_rect: None,
             };
@@ -163,7 +162,6 @@ struct ImguiRenderer {
     ctx: Context,
     renderer: imgui_opengl::Renderer,
     wnd_proc: WndProcType,
-    flags: ImguiRenderLoopFlags,
     game_hwnd: HWND,
     resolution_and_rect: Option<([i32; 2], RECT)>,
 }
@@ -171,7 +169,7 @@ struct ImguiRenderer {
 fn get_client_rect(hwnd: &HWND) -> Option<RECT> {
     unsafe {
         let mut rect: RECT = core::mem::zeroed();
-        if GetClientRect(*hwnd, &mut rect) != BOOL(0) {
+        if GetClientRect(*hwnd, &mut rect).is_ok() {
             Some(rect)
         } else {
             None
@@ -194,13 +192,13 @@ impl ImguiRenderer {
                     || IsChild(active_window, self.game_hwnd).as_bool())
             {
                 let gcp = GetCursorPos(&mut pos as *mut _);
-                if gcp.as_bool() && ScreenToClient(self.game_hwnd, &mut pos as *mut _).as_bool() {
+                if gcp.is_ok() && ScreenToClient(self.game_hwnd, &mut pos as *mut _).as_bool() {
                     io.mouse_pos[0] = pos.x as _;
                     io.mouse_pos[1] = pos.y as _;
                 }
             }
         } else {
-            trace!("GetClientRect error: {:x}", GetLastError().0);
+            trace!("GetClientRect error: {:?}", GetLastError());
         }
 
         // Update the delta time of ImGui as to tell it how long has elapsed since the
@@ -212,7 +210,7 @@ impl ImguiRenderer {
 
         let ui = self.ctx.frame();
 
-        IMGUI_RENDER_LOOP.get_mut().unwrap().render(ui, &self.flags);
+        IMGUI_RENDER_LOOP.get_mut().unwrap().render(ui);
         self.renderer.render(&mut self.ctx);
     }
 
@@ -232,14 +230,6 @@ impl ImguiWindowsEventHandler for ImguiRenderer {
 
     fn io_mut(&mut self) -> &mut imgui::Io {
         self.ctx.io_mut()
-    }
-
-    fn focus(&self) -> bool {
-        self.flags.focused
-    }
-
-    fn focus_mut(&mut self) -> &mut bool {
-        &mut self.flags.focused
     }
 
     fn wnd_proc(&self) -> WndProcType {
@@ -265,7 +255,7 @@ unsafe fn get_opengl_wglswapbuffers_addr() -> OpenGl32wglSwapBuffers {
 }
 
 /// Stores hook detours and implements the [`Hooks`] trait.
-pub struct ImguiOpenGl3Hooks(MhHooks);
+pub struct ImguiOpenGl3Hooks([MhHook; 1]);
 
 impl ImguiOpenGl3Hooks {
     /// # Safety
@@ -290,7 +280,7 @@ impl ImguiOpenGl3Hooks {
         IMGUI_RENDER_LOOP.get_or_init(|| Box::new(t));
         TRAMPOLINE.get_or_init(|| std::mem::transmute(hook_opengl_wgl_swap_buffers.trampoline()));
 
-        Self(MhHooks::new([hook_opengl_wgl_swap_buffers]).expect("couldn't create hooks"))
+        Self([hook_opengl_wgl_swap_buffers])
     }
 }
 
@@ -303,13 +293,11 @@ impl Hooks for ImguiOpenGl3Hooks {
         Box::new(unsafe { ImguiOpenGl3Hooks::new(t) })
     }
 
-    unsafe fn hook(&self) {
-        self.0.apply();
+    fn hooks(&self) -> &[MhHook] {
+        &self.0
     }
 
     unsafe fn unhook(&mut self) {
-        self.0.unapply();
-
         if let Some(renderer) = IMGUI_RENDERER.take() {
             renderer.lock().cleanup();
         }

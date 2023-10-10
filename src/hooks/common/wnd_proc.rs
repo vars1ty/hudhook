@@ -1,14 +1,15 @@
 //! This module contains functions related to processing input events.
 
+use std::ffi::c_void;
 use std::mem::size_of;
 
 use imgui::Io;
 use parking_lot::MutexGuard;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    MapVirtualKeyA, VIRTUAL_KEY, VK_CONTROL, VK_LBUTTON, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN,
-    VK_MBUTTON, VK_MENU, VK_RBUTTON, VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT,
-    VK_XBUTTON1, VK_XBUTTON2,
+    MapVirtualKeyA, MAPVK_VSC_TO_VK_EX, VIRTUAL_KEY, VK_CONTROL, VK_LBUTTON, VK_LCONTROL, VK_LMENU,
+    VK_LSHIFT, VK_LWIN, VK_MBUTTON, VK_MENU, VK_RBUTTON, VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_RWIN,
+    VK_SHIFT, VK_XBUTTON1, VK_XBUTTON2,
 };
 use windows::Win32::UI::Input::{
     GetRawInputData, HRAWINPUT, RAWINPUT, RAWINPUTHEADER, RAWKEYBOARD, RAWMOUSE_0_0,
@@ -17,7 +18,7 @@ use windows::Win32::UI::Input::{
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use super::{ImguiRenderLoop, ImguiWindowsEventHandler};
-use crate::hooks::{get_wheel_delta_wparam, hiword, loword};
+use crate::hooks::{get_wheel_delta_wparam, hiword};
 
 ////////////////////////////////////////////////////////////////////////////////
 // Raw input
@@ -150,7 +151,7 @@ fn handle_raw_input(io: &mut Io, WPARAM(wparam): WPARAM, LPARAM(lparam): LPARAM)
         GetRawInputData(
             HRAWINPUT(lparam),
             RID_INPUT,
-            &mut raw_data as *mut _ as _,
+            Some(&mut raw_data as *mut _ as *mut c_void),
             &mut raw_data_size,
             raw_data_header_size,
         )
@@ -232,7 +233,7 @@ fn handle_input(io: &mut Io, state: u32, WPARAM(wparam): WPARAM, LPARAM(lparam):
 ////////////////////////////////////////////////////////////////////////////////
 
 #[must_use]
-pub(crate) fn imgui_wnd_proc_impl<T>(
+pub fn imgui_wnd_proc_impl<T>(
     hwnd: HWND,
     umsg: u32,
     WPARAM(wparam): WPARAM,
@@ -259,7 +260,7 @@ where
             io.mouse_down[2] = true;
         },
         WM_XBUTTONDOWN | WM_XBUTTONDBLCLK => {
-            let btn = if hiword(wparam as _) == XBUTTON1.0 as u16 { 3 } else { 4 };
+            let btn = if hiword(wparam as _) == XBUTTON1 { 3 } else { 4 };
             io.mouse_down[btn] = true;
         },
         WM_LBUTTONUP => {
@@ -272,7 +273,7 @@ where
             io.mouse_down[2] = false;
         },
         WM_XBUTTONUP => {
-            let btn = if hiword(wparam as _) == XBUTTON1.0 as u16 { 3 } else { 4 };
+            let btn = if hiword(wparam as _) == XBUTTON1 { 3 } else { 4 };
             io.mouse_down[btn] = false;
         },
         WM_MOUSEWHEEL => {
@@ -286,10 +287,6 @@ where
             io.mouse_wheel_h += (wheel_delta_wparam as i16 as f32) / wheel_delta;
         },
         WM_CHAR => io.add_input_character(wparam as u8 as char),
-        WM_ACTIVATE => {
-            *imgui_renderer.focus_mut() = loword(wparam as _) != WA_INACTIVE as u16;
-            return LRESULT(1);
-        },
         _ => {},
     };
 

@@ -23,9 +23,10 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::hooks::common::{imgui_wnd_proc_impl, DummyHwnd, ImguiWindowsEventHandler, WndProcType};
-use crate::hooks::{Hooks, ImguiRenderLoop, ImguiRenderLoopFlags};
-use crate::mh::{MhHook, MhHooks};
+use crate::hooks::{Hooks, ImguiRenderLoop};
+use crate::mh::MhHook;
 use crate::renderers::imgui_dx9;
+use crate::util::try_out_ptr;
 
 unsafe fn draw(this: &IDirect3DDevice9) {
     let mut imgui_renderer = IMGUI_RENDERER
@@ -49,12 +50,7 @@ unsafe fn draw(this: &IDirect3DDevice9) {
                 imgui_wnd_proc as usize as i32,
             ));
 
-            Mutex::new(Box::new(ImguiRenderer {
-                ctx: context,
-                renderer,
-                wnd_proc,
-                flags: ImguiRenderLoopFlags { focused: false },
-            }))
+            Mutex::new(Box::new(ImguiRenderer { ctx: context, renderer, wnd_proc }))
         })
         .lock();
 
@@ -164,7 +160,6 @@ struct ImguiRenderer {
     ctx: Context,
     renderer: imgui_dx9::Renderer,
     wnd_proc: WndProcType,
-    flags: ImguiRenderLoopFlags,
 }
 
 impl ImguiRenderer {
@@ -182,7 +177,7 @@ impl ImguiRenderer {
                     || IsChild(active_window, self.renderer.get_hwnd()).as_bool())
             {
                 let gcp = GetCursorPos(&mut pos as *mut _);
-                if gcp.as_bool()
+                if gcp.is_ok()
                     && ScreenToClient(self.renderer.get_hwnd(), &mut pos as *mut _).as_bool()
                 {
                     io.mouse_pos[0] = pos.x as _;
@@ -190,12 +185,12 @@ impl ImguiRenderer {
                 }
             }
         } else {
-            trace!("GetWindowRect error: {:x}", GetLastError().0);
+            trace!("GetWindowRect error: {:?}", GetLastError());
         }
 
         let ui = self.ctx.frame();
 
-        IMGUI_RENDER_LOOP.get_mut().unwrap().render(ui, &self.flags);
+        IMGUI_RENDER_LOOP.get_mut().unwrap().render(ui);
         let draw_data = self.ctx.render();
         self.renderer.render(draw_data).unwrap();
     }
@@ -218,14 +213,6 @@ impl ImguiWindowsEventHandler for ImguiRenderer {
         self.ctx.io_mut()
     }
 
-    fn focus(&self) -> bool {
-        self.flags.focused
-    }
-
-    fn focus_mut(&mut self) -> &mut bool {
-        &mut self.flags.focused
-    }
-
     fn wnd_proc(&self) -> WndProcType {
         self.wnd_proc
     }
@@ -234,7 +221,7 @@ unsafe impl Send for ImguiRenderer {}
 unsafe impl Sync for ImguiRenderer {}
 
 /// Stores hook detours and implements the [`Hooks`] trait.
-pub struct ImguiDx9Hooks(MhHooks);
+pub struct ImguiDx9Hooks([MhHook; 3]);
 
 impl ImguiDx9Hooks {
     /// # Safety
@@ -269,10 +256,7 @@ impl ImguiDx9Hooks {
             )
         });
 
-        Self(
-            MhHooks::new([hook_dx9_end_scene, hook_dx9_present, hook_dx9_reset])
-                .expect("couldn't create hooks"),
-        )
+        Self([hook_dx9_end_scene, hook_dx9_present, hook_dx9_reset])
     }
 }
 
@@ -285,13 +269,11 @@ impl Hooks for ImguiDx9Hooks {
         Box::new(unsafe { ImguiDx9Hooks::new(t) })
     }
 
-    unsafe fn hook(&self) {
-        self.0.apply();
+    fn hooks(&self) -> &[MhHook] {
+        &self.0
     }
 
     unsafe fn unhook(&mut self) {
-        self.0.unapply();
-
         if let Some(renderer) = IMGUI_RENDERER.take() {
             renderer.lock().cleanup();
         }
@@ -318,17 +300,17 @@ unsafe fn get_dx9_present_addr() -> (Dx9EndSceneFn, Dx9PresentFn, Dx9ResetFn) {
     };
 
     let dummy_hwnd = DummyHwnd::new();
-    let mut device: Option<IDirect3DDevice9> = None;
-    d9.CreateDevice(
-        D3DADAPTER_DEFAULT,
-        D3DDEVTYPE_NULLREF,
-        dummy_hwnd.hwnd(), // GetDesktopWindow(),
-        D3DCREATE_SOFTWARE_VERTEXPROCESSING as u32,
-        &mut present_params,
-        &mut device,
-    )
+    let device: IDirect3DDevice9 = try_out_ptr(|v| {
+        d9.CreateDevice(
+            D3DADAPTER_DEFAULT,
+            D3DDEVTYPE_NULLREF,
+            dummy_hwnd.hwnd(), // GetDesktopWindow(),
+            D3DCREATE_SOFTWARE_VERTEXPROCESSING as u32,
+            &mut present_params,
+            v,
+        )
+    })
     .expect("IDirect3DDevice9::CreateDevice: failed to create device");
-    let device = device.unwrap();
 
     let end_scene_ptr = device.vtable().EndScene;
     let present_ptr = device.vtable().Present;

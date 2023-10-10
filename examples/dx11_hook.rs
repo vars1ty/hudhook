@@ -1,7 +1,5 @@
-#![feature(lazy_cell)]
-
 use hudhook::hooks::dx11::ImguiDx11Hooks;
-use hudhook::hooks::{ImguiRenderLoop, ImguiRenderLoopFlags};
+use hudhook::hooks::ImguiRenderLoop;
 use imgui::Condition;
 use tracing::metadata::LevelFilter;
 struct Dx11HookExample;
@@ -9,8 +7,8 @@ struct Dx11HookExample;
 impl Dx11HookExample {
     fn new() -> Self {
         println!("Initializing");
-        hudhook::utils::alloc_console();
-        hudhook::utils::enable_console_colors();
+        hudhook::alloc_console().expect("AllocConsole");
+        hudhook::enable_console_colors();
 
         tracing_subscriber::fmt()
             .with_max_level(LevelFilter::TRACE)
@@ -25,7 +23,7 @@ impl Dx11HookExample {
 }
 
 impl ImguiRenderLoop for Dx11HookExample {
-    fn render(&mut self, ui: &mut imgui::Ui, _: &ImguiRenderLoopFlags) {
+    fn render(&mut self, ui: &mut imgui::Ui) {
         ui.window("Hello world").size([300.0, 110.0], Condition::FirstUseEver).build(|| {
             ui.text("Hello world!");
             ui.text("こんにちは世界！");
